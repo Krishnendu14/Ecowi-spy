@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RF Motion Detector</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+  :root {
+    --green: #00ff88;
+    --green-dim: #00ff8844;
+    --green-glow: #00ff8820;
+    --red: #ff3355;
+    --amber: #ffaa00;
+    --bg: #020c06;
+    --panel: #040f08;
+    --border: #0a2e14;
+    --text: #a0ffcc;
+    --text-dim: #3a7a52;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,255,136,0.015) 2px,
+      rgba(0,255,136,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* Noise texture */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 99;
+  }
+
+  header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--panel);
+  }
+
+  .logo {
+    font-family: 'Orbitron', monospace;
+    font-weight: 900;
+    font-size: 15px;
+    letter-spacing: 3px;
+    color: var(--green);
+    text-shadow: 0 0 20px var(--green);
+  }
+
+  .status-pill {
+    font-size: 10px;
+    letter-spacing: 2px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    border: 1px solid;
+    transition: all 0.3s;
+  }
+  .status-pill.idle { border-color: var(--text-dim); color: var(--text-dim); }
+  .status-pill.active { border-color: var(--green); color: var(--green); box-shadow: 0 0 10px var(--green-dim); animation: blink 1.5s infinite; }
+  .status-pill.alert { border-color: var(--red); color: var(--red); box-shadow: 0 0 15px rgba(255,51,85,0.4); animation: blink 0.5s infinite; }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* Radar display */
+  .radar-section {
+    display: flex;
+    justify-content: center;
+    padding: 24px 20px 16px;
+    position: relative;
+  }
+
+  .radar-wrap {
+    position: relative;
+    width: 260px;
+    height: 260px;
+  }
+
+  .radar-svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 20px rgba(0,255,136,0.3));
+  }
+
+  .sweep-line {
+    transform-origin: 130px 130px;
+    animation: sweep 3s linear infinite;
+  }
+  @keyframes sweep { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+  .blip {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 12px var(--red), 0 0 24px rgba(255,51,85,0.5);
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+  }
+
+  /* Mode tabs */
+  .modes {
+    display: flex;
+    margin: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .mode-tab {
+    flex: 1;
+    padding: 10px 4px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-align: center;
+    background: var(--panel);
+    color: var(--text-dim);
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-right: 1px solid var(--border);
+  }
+  .mode-tab:last-child { border-right: none; }
+  .mode-tab.active {
+    background: var(--green-glow);
+    color: var(--green);
+    text-shadow: 0 0 8px var(--green);
+  }
+
+  /* Metric panels */
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .metric-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--green);
+    opacity: 0.4;
+  }
+
+  .metric-label {
+    font-size: 9px;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .metric-value {
+    font-family: 'Orbitron', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--green);
+    line-height: 1;
+    text-shadow: 0 0 10px var(--green-dim);
+    transition: color 0.3s;
+  }
+
+  .metric-value.alert { color: var(--red); text-shadow: 0 0 10px rgba(255,51,85,0.5); }
+  .metric-value.warn { color: var(--amber); text-shadow: 0 0 10px rgba(255,170,0,0.4); }
+
+  .metric-unit {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  /* Waveform */
+  .waveform-section {
+    padding: 0 16px 14px;
+  }
+
+  .section-label {
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  canvas {
+    width: 100%;
+    height: 80px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: block;
+  }
+
+  /* Log */
+  .log-section {
+    padding: 0 16px 14px;
+  }
+
+  .log-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    height: 90px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    font-size: 11px;
+    line-height: 1.6;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .log-line { color: var(--text-dim); }
+  .log-line.important { color: var(--green); }
+  .log-line.alert { color: var(--red); }
+  .log-time { color: var(--text-dim); opacity: 0.5; margin-right: 6px; }
+
+  /* Start button */
+  .controls {
+    padding: 0 16px 20px;
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn-start {
+    flex: 1;
+    padding: 14px;
+    font-family: 'Orbitron', monospace;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    background: transparent;
+    color: var(--green);
+    border: 1px solid var(--green);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-shadow: 0 0 10px var(--green-dim);
+    box-shadow: 0 0 20px var(--green-glow) inset;
+  }
+
+  .btn-start:hover, .btn-start:active {
+    background: var(--green-dim);
+    box-shadow: 0 0 30px var(--green-dim) inset, 0 0 20px var(--green-dim);
+  }
+
+  .btn-start.running {
+    color: var(--red);
+    border-color: var(--red);
+    text-shadow: 0 0 10px rgba(255,51,85,0.4);
+    box-shadow: 0 0 20px rgba(255,51,85,0.1) inset;
+  }
+
+  .btn-sense {
+    padding: 14px 16px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  /* Sensitivity slider */
+  .slider-section {
+    padding: 0 16px 14px;
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    cursor: pointer;
+  }
+
+  .slider-val {
+    font-family: 'Orbitron', monospace;
+    font-size: 12px;
+    color: var(--green);
+    width: 36px;
+    text-align: right;
+  }
+
+  /* Mode info */
+  .mode-info {
+    margin: 0 16px 14px;
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--green);
+    border-radius: 2px;
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">MOTIONRF</div>
+  <div class="status-pill idle" id="statusPill">STANDBY</div>
+</header>
+
+<!-- Radar -->
+<div class="radar-section">
+  <div class="radar-wrap" id="radarWrap">
+    <svg class="radar-svg" viewBox="0 0 260 260" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="radarGrad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#00ff88" stop-opacity="0.15"/>
+          <stop offset="100%" stop-color="#00ff88" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <!-- Background fill -->
+      <circle cx="130" cy="130" r="125" fill="#020c06"/>
+      <circle cx="130" cy="130" r="125" fill="url(#radarGrad)"/>
+
+      <!-- Rings -->
+      <circle cx="130" cy="130" r="31" fill="none" stroke="#0a2e14" stroke-width="1"/>
+      <circle cx="130" cy="130" r="62" fill="none" stroke="#0a2e14" stroke-width="1"/>
+      <circle cx="130" cy="130" r="93" fill="none" stroke="#0a2e14" stroke-width="1"/>
+      <circle cx="130" cy="130" r="124" fill="none" stroke="#0a2e14" stroke-width="1"/>
+
+      <!-- Cross hairs -->
+      <line x1="130" y1="6" x2="130" y2="254" stroke="#0a2e14" stroke-width="1"/>
+      <line x1="6" y1="130" x2="254" y2="130" stroke="#0a2e14" stroke-width="1"/>
+      <line x1="42" y1="42" x2="218" y2="218" stroke="#081a0c" stroke-width="1"/>
+      <line x1="218" y1="42" x2="42" y2="218" stroke="#081a0c" stroke-width="1"/>
+
+      <!-- Sweep -->
+      <g class="sweep-line" id="sweepGroup">
+        <defs>
+          <linearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#00ff88" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#00ff88" stop-opacity="0.7"/>
+          </linearGradient>
+        </defs>
+        <path d="M130 130 L130 6" stroke="#00ff88" stroke-width="1.5" opacity="0.8" filter="url(#glow)"/>
+        <path d="M130 130 L130 6" stroke="url(#sweepGrad)" stroke-width="20" opacity="0.1"/>
+      </g>
+
+      <!-- Center dot -->
+      <circle cx="130" cy="130" r="4" fill="#00ff88" filter="url(#glow)"/>
+
+      <!-- Range labels -->
+      <text x="133" y="100" fill="#3a7a52" font-size="9" font-family="'Share Tech Mono'">2m</text>
+      <text x="133" y="69" fill="#3a7a52" font-size="9" font-family="'Share Tech Mono'">5m</text>
+      <text x="133" y="38" fill="#3a7a52" font-size="9" font-family="'Share Tech Mono'">8m</text>
+    </svg>
+
+    <!-- Blips injected by JS -->
+    <div class="blip" id="blip0"></div>
+    <div class="blip" id="blip1"></div>
+    <div class="blip" id="blip2"></div>
+  </div>
+</div>
+
+<!-- Mode tabs -->
+<div class="modes">
+  <button class="mode-tab active" onclick="setMode('doppler')" id="tab-doppler">🔊 DOPPLER</button>
+  <button class="mode-tab" onclick="setMode('camera')" id="tab-camera">📷 CAMERA</button>
+  <button class="mode-tab" onclick="setMode('rssi')" id="tab-rssi">📶EM-signal</button>
+</div>
+
+<!-- Mode info -->
+<div class="mode-info" id="modeInfo">
+  <strong style="color:var(--green)">DOPPLER SONAR:</strong> Emits 18kHz inaudible tone via speaker. Mic detects frequency shift from moving objects (same principle as bat echolocation). Works in dark, through fabric. Range ~3–5m.
+</div>
+
+<!-- Metrics -->
+<div class="metrics">
+  <div class="metric-card">
+    <div class="metric-label">MOTION LEVEL</div>
+    <div class="metric-value" id="motionVal">0.0</div>
+    <div class="metric-unit">VARIANCE</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">DETECTION</div>
+    <div class="metric-value" id="detectionVal">NONE</div>
+    <div class="metric-unit">STATUS</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">FREQUENCY SHIFT</div>
+    <div class="metric-value" id="freqVal">—</div>
+    <div class="metric-unit">HZ DELTA</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">SAMPLES</div>
+    <div class="metric-value" id="samplesVal">0</div>
+    <div class="metric-unit">PROCESSED</div>
+  </div>
+</div>
+
+<!-- Sensitivity -->
+<div class="slider-section">
+  <div class="section-label">SENSITIVITY</div>
+  <div class="slider-row">
+    <span style="font-size:10px;color:var(--text-dim)">LOW</span>
+    <input type="range" id="sensitivitySlider" min="1" max="10" value="5" oninput="updateSensitivity(this.value)">
+    <span style="font-size:10px;color:var(--text-dim)">HIGH</span>
+    <span class="slider-val" id="sensVal">5</span>
+  </div>
+</div>
+
+<!-- Waveform -->
+<div class="waveform-section">
+  <div class="section-label">SIGNAL WAVEFORM</div>
+  <canvas id="waveCanvas"></canvas>
+</div>
+
+<!-- Log -->
+<div class="log-section">
+  <div class="section-label">SYSTEM LOG</div>
+  <div class="log-box" id="logBox">
+    <div class="log-line"><span class="log-time">00:00</span>System initialized. Select mode and press ACTIVATE.</div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="controls">
+  <button class="btn-start" id="startBtn" onclick="toggleDetection()">ACTIVATE</button>
+  <button class="btn-sense" onclick="runSingleScan()">SCAN</button>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+let mode = 'doppler';
+let running = false;
+let sensitivity = 5;
+let sampleCount = 0;
+let motionHistory = [];
+let frameCount = 0;
+let alertCooldown = 0;
+
+// Audio
+let audioCtx = null;
+let oscillator = null;
+let analyser = null;
+let micStream = null;
+let micSource = null;
+let dopplerBuffer = [];
+
+// Camera
+let videoEl = null;
+let camCanvas = null;
+let camCtx = null;
+let prevFrame = null;
+let camInterval = null;
+
+// RSSI
+let rssiBaseline = null;
+let rssiHistory = [];
+
+// Waveform canvas
+const waveCanvas = document.getElementById('waveCanvas');
+const waveCtx = waveCanvas.getContext('2d');
+
+function resizeCanvas() {
+  waveCanvas.width = waveCanvas.offsetWidth * window.devicePixelRatio;
+  waveCanvas.height = waveCanvas.offsetHeight * window.devicePixelRatio;
+  waveCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ─── Logging ─────────────────────────────────────────────────────────────────
+function log(msg, type = '') {
+  const box = document.getElementById('logBox');
+  const now = new Date();
+  const time = `${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+  const line = document.createElement('div');
+  line.className = 'log-line ' + type;
+  line.innerHTML = `<span class="log-time">${time}</span>${msg}`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+  // Keep log trim
+  while (box.children.length > 30) box.removeChild(box.firstChild);
+}
+
+// ─── Mode switching ───────────────────────────────────────────────────────────
+const modeInfos = {
+  doppler: '<strong style="color:var(--green)">DOPPLER SONAR:</strong> Emits 18kHz inaudible tone via speaker. Mic detects frequency shift from moving objects. Works in dark, through fabric. Range ~3–5m.',
+  camera:  '<strong style="color:var(--green)">CAMERA DELTA:</strong> Compares pixel differences between consecutive frames. Very sensitive — detects subtle motion across the camera field of view.',
+  rssi:    '<strong style="color:var(--green)">WIFI RSSI:</strong> Monitors WiFi signal strength variance. Moving bodies between phone and router cause measurable signal fluctuations. Requires WiFi connection.'
+};
+
+function setMode(m) {
+  if (running) { toggleDetection(); }
+  mode = m;
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('tab-' + m).classList.add('active');
+  document.getElementById('modeInfo').innerHTML = modeInfos[m];
+  resetMetrics();
+  log(`Mode switched to ${m.toUpperCase()}`, 'important');
+}
+
+function resetMetrics() {
+  document.getElementById('motionVal').textContent = '0.0';
+  document.getElementById('detectionVal').textContent = 'NONE';
+  document.getElementById('freqVal').textContent = '—';
+  document.getElementById('samplesVal').textContent = '0';
+  motionHistory = [];
+  sampleCount = 0;
+  dopplerBuffer = [];
+  rssiBaseline = null;
+  rssiHistory = [];
+  prevFrame = null;
+  clearWaveform();
+}
+
+// ─── Main toggle ──────────────────────────────────────────────────────────────
+async function toggleDetection() {
+  if (!running) {
+    running = true;
+    document.getElementById('startBtn').textContent = 'DEACTIVATE';
+    document.getElementById('startBtn').classList.add('running');
+    setStatus('active', 'ACTIVE');
+    log('Detection started — mode: ' + mode.toUpperCase(), 'important');
+    if (mode === 'doppler') await startDoppler();
+    else if (mode === 'camera') await startCamera();
+    else if (mode === 'rssi') startRSSI();
+  } else {
+    stopAll();
+  }
+}
+
+function stopAll() {
+  running = false;
+  document.getElementById('startBtn').textContent = 'ACTIVATE';
+  document.getElementById('startBtn').classList.remove('running');
+  setStatus('idle', 'STANDBY');
+  log('Detection stopped.');
+  stopDoppler();
+  stopCamera();
+  clearBlips();
+}
+
+function setStatus(cls, label) {
+  const pill = document.getElementById('statusPill');
+  pill.className = 'status-pill ' + cls;
+  pill.textContent = label;
+}
+
+// ─── DOPPLER SONAR ────────────────────────────────────────────────────────────
+async function startDoppler() {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Emit tone
+    oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 18500; // near-ultrasonic
+    gainNode.gain.value = 0.3;
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    oscillator.start();
+
+    // Capture mic
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+    micStream = stream;
+    micSource = audioCtx.createMediaStreamSource(stream);
+
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 8192;
+    analyser.smoothingTimeConstant = 0.6;
+    micSource.connect(analyser);
+
+    log('Emitting 18.5kHz tone. Microphone active.', 'important');
+    log('Move your hand in front of the device.');
+    requestAnimationFrame(dopplerLoop);
+  } catch (e) {
+    log('Mic access denied: ' + e.message, 'alert');
+    stopAll();
+  }
+}
+
+function dopplerLoop() {
+  if (!running || mode !== 'doppler') return;
+
+  const freqData = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(freqData);
+
+  const sampleRate = audioCtx.sampleRate;
+  const binHz = sampleRate / analyser.fftSize;
+  const targetHz = 18500;
+  const windowBins = Math.floor(400 / binHz); // ±400Hz window
+  const centerBin = Math.floor(targetHz / binHz);
+
+  // Find peak in window
+  let maxVal = -Infinity, maxBin = centerBin;
+  for (let b = centerBin - windowBins; b <= centerBin + windowBins; b++) {
+    if (b >= 0 && b < freqData.length && freqData[b] > maxVal) {
+      maxVal = freqData[b];
+      maxBin = b;
+    }
+  }
+
+  const freqShift = Math.abs((maxBin - centerBin) * binHz);
+  dopplerBuffer.push(freqShift);
+  if (dopplerBuffer.length > 30) dopplerBuffer.shift();
+
+  const avgShift = dopplerBuffer.reduce((a, b) => a + b, 0) / dopplerBuffer.length;
+  const variance = Math.sqrt(dopplerBuffer.reduce((s, v) => s + Math.pow(v - avgShift, 2), 0) / dopplerBuffer.length);
+
+  sampleCount++;
+  updateDisplay(variance / 10, freqShift.toFixed(1));
+  drawWaveform(dopplerBuffer.map(v => v / 100));
+
+  requestAnimationFrame(dopplerLoop);
+}
+
+function stopDoppler() {
+  if (oscillator) { try { oscillator.stop(); } catch(e){} oscillator = null; }
+  
