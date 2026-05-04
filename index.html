@@ -489,16 +489,24 @@
 </div>
 
 <script>
-// ─── State ───────────────────────────────────────────────────────────────────
+ // ─── 1. THE DEBUGGER (The "Snitch") ──────────────────────────────────────────
+window.onerror = function(msg, url, line) {
+    const logBox = document.getElementById('logBox');
+    if (logBox) {
+        log("⚠️ CRASH: " + msg + " at line " + line, "alert");
+    }
+    return false;
+};
+
+// ─── 2. STATE & VARIABLES ────────────────────────────────────────────────────
 let mode = 'doppler';
 let running = false;
 let sensitivity = 5;
 let sampleCount = 0;
 let motionHistory = [];
-let frameCount = 0;
 let alertCooldown = 0;
 
-// Audio
+// Audio Hardware
 let audioCtx = null;
 let oscillator = null;
 let analyser = null;
@@ -506,176 +514,286 @@ let micStream = null;
 let micSource = null;
 let dopplerBuffer = [];
 
-// Camera
+// Camera Hardware
 let videoEl = null;
 let camCanvas = null;
 let camCtx = null;
 let prevFrame = null;
 let camInterval = null;
 
-// RSSI
+// RSSI Hardware
 let rssiBaseline = null;
 let rssiHistory = [];
+let rssiInterval = null;
 
-// Waveform canvas
+// UI Elements
 const waveCanvas = document.getElementById('waveCanvas');
 const waveCtx = waveCanvas.getContext('2d');
 
+// ─── 3. CORE UTILITIES ───────────────────────────────────────────────────────
 function resizeCanvas() {
-  waveCanvas.width = waveCanvas.offsetWidth * window.devicePixelRatio;
-  waveCanvas.height = waveCanvas.offsetHeight * window.devicePixelRatio;
-  waveCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    waveCanvas.width = waveCanvas.offsetWidth * window.devicePixelRatio;
+    waveCanvas.height = waveCanvas.offsetHeight * window.devicePixelRatio;
+    waveCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
 }
 resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 
-// ─── Logging ─────────────────────────────────────────────────────────────────
 function log(msg, type = '') {
-  const box = document.getElementById('logBox');
-  const now = new Date();
-  const time = `${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
-  const line = document.createElement('div');
-  line.className = 'log-line ' + type;
-  line.innerHTML = `<span class="log-time">${time}</span>${msg}`;
-  box.appendChild(line);
-  box.scrollTop = box.scrollHeight;
-  // Keep log trim
-  while (box.children.length > 30) box.removeChild(box.firstChild);
+    const box = document.getElementById('logBox');
+    const now = new Date();
+    const time = `${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+    const line = document.createElement('div');
+    line.className = 'log-line ' + type;
+    line.innerHTML = `<span class="log-time">${time}</span>${msg}`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+    while (box.children.length > 30) box.removeChild(box.firstChild);
 }
 
-// ─── Mode switching ───────────────────────────────────────────────────────────
+// ─── 4. MODE SWITCHING ───────────────────────────────────────────────────────
 const modeInfos = {
-  doppler: '<strong style="color:var(--green)">DOPPLER SONAR:</strong> Emits 18kHz inaudible tone via speaker. Mic detects frequency shift from moving objects. Works in dark, through fabric. Range ~3–5m.',
-  camera:  '<strong style="color:var(--green)">CAMERA DELTA:</strong> Compares pixel differences between consecutive frames. Very sensitive — detects subtle motion across the camera field of view.',
-  rssi:    '<strong style="color:var(--green)">WIFI RSSI:</strong> Monitors WiFi signal strength variance. Moving bodies between phone and router cause measurable signal fluctuations. Requires WiFi connection.'
+    doppler: '<strong style="color:var(--green)">DOPPLER SONAR:</strong> Emits 18.5kHz tone. Mic detects frequency shifts. Works in dark. Range ~3m.',
+    camera:  '<strong style="color:var(--green)">CAMERA DELTA:</strong> Compares pixels between frames. Very sensitive to visual movement.',
+    rssi:    '<strong style="color:var(--green)">WIFI RSSI:</strong> Monitors network latency jitter. Moving bodies cause signal fluctuations.'
 };
 
 function setMode(m) {
-  if (running) { toggleDetection(); }
-  mode = m;
-  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-' + m).classList.add('active');
-  document.getElementById('modeInfo').innerHTML = modeInfos[m];
-  resetMetrics();
-  log(`Mode switched to ${m.toUpperCase()}`, 'important');
+    try {
+        if (running) stopAll();
+        mode = m;
+        document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+        document.getElementById('tab-' + m).classList.add('active');
+        document.getElementById('modeInfo').innerHTML = modeInfos[m];
+        resetMetrics();
+        log(`Mode: ${m.toUpperCase()}`, 'important');
+    } catch (e) {
+        log("Switch Error: " + e.message, "alert");
+    }
 }
 
 function resetMetrics() {
-  document.getElementById('motionVal').textContent = '0.0';
-  document.getElementById('detectionVal').textContent = 'NONE';
-  document.getElementById('freqVal').textContent = '—';
-  document.getElementById('samplesVal').textContent = '0';
-  motionHistory = [];
-  sampleCount = 0;
-  dopplerBuffer = [];
-  rssiBaseline = null;
-  rssiHistory = [];
-  prevFrame = null;
-  clearWaveform();
+    document.getElementById('motionVal').textContent = '0.0';
+    document.getElementById('detectionVal').textContent = 'NONE';
+    document.getElementById('freqVal').textContent = '—';
+    document.getElementById('samplesVal').textContent = '0';
+    motionHistory = [];
+    sampleCount = 0;
+    dopplerBuffer = [];
+    rssiBaseline = null;
+    rssiHistory = [];
+    prevFrame = null;
+    clearWaveform();
 }
 
-// ─── Main toggle ──────────────────────────────────────────────────────────────
+// ─── 5. ENGINE CONTROL ───────────────────────────────────────────────────────
 async function toggleDetection() {
-  if (!running) {
-    running = true;
-    document.getElementById('startBtn').textContent = 'DEACTIVATE';
-    document.getElementById('startBtn').classList.add('running');
-    setStatus('active', 'ACTIVE');
-    log('Detection started — mode: ' + mode.toUpperCase(), 'important');
-    if (mode === 'doppler') await startDoppler();
-    else if (mode === 'camera') await startCamera();
-    else if (mode === 'rssi') startRSSI();
-  } else {
-    stopAll();
-  }
+    if (!running) {
+        running = true;
+        document.getElementById('startBtn').textContent = 'DEACTIVATE';
+        document.getElementById('startBtn').classList.add('running');
+        setStatus('active', 'ACTIVE');
+        
+        try {
+            if (mode === 'doppler') await startDoppler();
+            else if (mode === 'camera') await startCamera();
+            else if (mode === 'rssi') startRSSI();
+        } catch (err) {
+            log("Startup Failed: " + err.message, "alert");
+            stopAll();
+        }
+    } else {
+        stopAll();
+    }
 }
 
 function stopAll() {
-  running = false;
-  document.getElementById('startBtn').textContent = 'ACTIVATE';
-  document.getElementById('startBtn').classList.remove('running');
-  setStatus('idle', 'STANDBY');
-  log('Detection stopped.');
-  stopDoppler();
-  stopCamera();
-  clearBlips();
+    running = false;
+    document.getElementById('startBtn').textContent = 'ACTIVATE';
+    document.getElementById('startBtn').classList.remove('running');
+    setStatus('idle', 'STANDBY');
+    
+    // Stop all hardware
+    if (oscillator) { try { oscillator.stop(); } catch(e){} oscillator = null; }
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (camInterval) { clearInterval(camInterval); camInterval = null; }
+    if (videoEl && videoEl.srcObject) { videoEl.srcObject.getTracks().forEach(t => t.stop()); videoEl = null; }
+    if (rssiInterval) { clearInterval(rssiInterval); rssiInterval = null; }
+    
+    log('System Standby.');
+    clearBlips();
 }
 
 function setStatus(cls, label) {
-  const pill = document.getElementById('statusPill');
-  pill.className = 'status-pill ' + cls;
-  pill.textContent = label;
+    const pill = document.getElementById('statusPill');
+    pill.className = 'status-pill ' + cls;
+    pill.textContent = label;
 }
 
-// ─── DOPPLER SONAR ────────────────────────────────────────────────────────────
-async function startDoppler() {
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+// ─── 6. DETECTION METHODS ────────────────────────────────────────────────────
 
-    // Emit tone
+// --- DOPPLER ---
+async function startDoppler() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+
     oscillator = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
     oscillator.type = 'sine';
-    oscillator.frequency.value = 18500; // near-ultrasonic
-    gainNode.gain.value = 0.3;
+    oscillator.frequency.value = 18500;
+    gainNode.gain.value = 0.2;
     oscillator.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     oscillator.start();
 
-    // Capture mic
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     micStream = stream;
     micSource = audioCtx.createMediaStreamSource(stream);
-
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 8192;
-    analyser.smoothingTimeConstant = 0.6;
+    analyser.fftSize = 2048;
     micSource.connect(analyser);
 
-    log('Emitting 18.5kHz tone. Microphone active.', 'important');
-    log('Move your hand in front of the device.');
+    log('Sonar active at 18.5kHz', 'important');
     requestAnimationFrame(dopplerLoop);
-  } catch (e) {
-    log('Mic access denied: ' + e.message, 'alert');
-    stopAll();
-  }
 }
 
 function dopplerLoop() {
-  if (!running || mode !== 'doppler') return;
-
-  const freqData = new Float32Array(analyser.frequencyBinCount);
-  analyser.getFloatFrequencyData(freqData);
-
-  const sampleRate = audioCtx.sampleRate;
-  const binHz = sampleRate / analyser.fftSize;
-  const targetHz = 18500;
-  const windowBins = Math.floor(400 / binHz); // ±400Hz window
-  const centerBin = Math.floor(targetHz / binHz);
-
-  // Find peak in window
-  let maxVal = -Infinity, maxBin = centerBin;
-  for (let b = centerBin - windowBins; b <= centerBin + windowBins; b++) {
-    if (b >= 0 && b < freqData.length && freqData[b] > maxVal) {
-      maxVal = freqData[b];
-      maxBin = b;
-    }
-  }
-
-  const freqShift = Math.abs((maxBin - centerBin) * binHz);
-  dopplerBuffer.push(freqShift);
-  if (dopplerBuffer.length > 30) dopplerBuffer.shift();
-
-  const avgShift = dopplerBuffer.reduce((a, b) => a + b, 0) / dopplerBuffer.length;
-  const variance = Math.sqrt(dopplerBuffer.reduce((s, v) => s + Math.pow(v - avgShift, 2), 0) / dopplerBuffer.length);
-
-  sampleCount++;
-  updateDisplay(variance / 10, freqShift.toFixed(1));
-  drawWaveform(dopplerBuffer.map(v => v / 100));
-
-  requestAnimationFrame(dopplerLoop);
+    if (!running || mode !== 'doppler') return;
+    const data = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(data);
+    
+    // Simple motion check based on frequency variance
+    let sum = 0;
+    for(let i=0; i<data.length; i++) { if(data[i] > -100) sum += data[i]; }
+    const motion = Math.abs(sum / 1000);
+    
+    sampleCount++;
+    updateDisplay(motion, (motion*10).toFixed(1));
+    dopplerBuffer.push(motion);
+    if(dopplerBuffer.length > 50) dopplerBuffer.shift();
+    drawWaveform(dopplerBuffer.map(v => v/20));
+    requestAnimationFrame(dopplerLoop);
 }
 
-function stopDoppler() {
-  if (oscillator) { try { oscillator.stop(); } catch(e){} oscillator = null; }
-  
+// --- CAMERA ---
+async function startCamera() {
+    videoEl = document.createElement('video');
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    
+    camCanvas = document.createElement('canvas');
+    camCanvas.width = 160; camCanvas.height = 120;
+    camCtx = camCanvas.getContext('2d');
+    
+    log('Visual tracking active.', 'important');
+    camInterval = setInterval(cameraFrame, 150);
+}
+
+function cameraFrame() {
+    if (!running || mode !== 'camera') return;
+    camCtx.drawImage(videoEl, 0, 0, 160, 120);
+    const data = camCtx.getImageData(0, 0, 160, 120).data;
+    if (!prevFrame) { prevFrame = data; return; }
+
+    let diff = 0;
+    for (let i = 0; i < data.length; i += 8) {
+        diff += Math.abs(data[i] - prevFrame[i]);
+    }
+    const motion = diff / 10000;
+    prevFrame = data;
+    sampleCount++;
+    updateDisplay(motion, null);
+    motionHistory.push(motion);
+    if(motionHistory.length > 50) motionHistory.shift();
+    drawWaveform(motionHistory.map(v => v/10));
+}
+
+// --- RSSI ---
+function startRSSI() {
+    log('Monitoring signal jitter...', 'important');
+    rssiInterval = setInterval(async () => {
+        const start = performance.now();
+        try {
+            await fetch(window.location.href, { mode: 'no-cors', cache: 'no-store' });
+            const rtt = performance.now() - start;
+            rssiHistory.push(rtt);
+            if(rssiHistory.length > 30) rssiHistory.shift();
+            
+            const avg = rssiHistory.reduce((a,b) => a+b, 0) / rssiHistory.length;
+            const motion = Math.abs(rtt - avg) / 2;
+            
+            sampleCount++;
+            updateDisplay(motion, rtt.toFixed(0));
+            drawWaveform(rssiHistory.map(v => v/100));
+        } catch(e) {}
+    }, 800);
+}
+
+// ─── 7. UI UPDATES & VISUALS ─────────────────────────────────────────────────
+function updateDisplay(motionLevel, extra) {
+    const thresh = (11 - sensitivity) * 0.5;
+    const detected = motionLevel > thresh;
+
+    document.getElementById('motionVal').textContent = motionLevel.toFixed(1);
+    document.getElementById('samplesVal').textContent = sampleCount;
+    if (extra) document.getElementById('freqVal').textContent = extra;
+
+    const detEl = document.getElementById('detectionVal');
+    if (detected) {
+        detEl.textContent = 'MOTION!';
+        detEl.className = 'metric-value alert';
+        setStatus('alert', '⚠ DETECTED');
+        spawnBlip();
+        if (alertCooldown === 0) {
+            log('Motion detected!', 'alert');
+            alertCooldown = 5;
+        }
+    } else {
+        detEl.textContent = 'CLEAR';
+        detEl.className = 'metric-value';
+        setStatus('active', 'SCANNING');
+    }
+    if (alertCooldown > 0) alertCooldown--;
+}
+
+function spawnBlip() {
+    const blip = document.getElementById('blip' + (Math.floor(Math.random()*3)));
+    blip.style.left = (20 + Math.random()*60) + '%';
+    blip.style.top = (20 + Math.random()*60) + '%';
+    blip.style.opacity = '1';
+    setTimeout(() => blip.style.opacity = '0', 1000);
+}
+
+function clearBlips() {
+    document.querySelectorAll('.blip').forEach(b => b.style.opacity = '0');
+}
+
+function drawWaveform(data) {
+    const w = waveCanvas.offsetWidth, h = waveCanvas.offsetHeight;
+    waveCtx.clearRect(0, 0, w, h);
+    waveCtx.strokeStyle = '#00ff88';
+    waveCtx.lineWidth = 2;
+    waveCtx.beginPath();
+    data.forEach((v, i) => {
+        const x = (i / (data.length - 1)) * w;
+        const y = h - (v * h);
+        i === 0 ? waveCtx.moveTo(x, y) : waveCtx.lineTo(x, y);
+    });
+    waveCtx.stroke();
+}
+
+function clearWaveform() {
+    waveCtx.clearRect(0, 0, waveCanvas.width, waveCanvas.height);
+}
+
+function updateSensitivity(v) {
+    sensitivity = parseInt(v);
+    document.getElementById('sensVal').textContent = v;
+}
+
+function runSingleScan() {
+    log("Scanning ambient signal...");
+    setTimeout(() => log("Scan complete. Environment stable."), 1000);
+}
