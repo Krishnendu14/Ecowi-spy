@@ -41,7 +41,7 @@ Utilizes computer vision to compare pixel-by-pixel changes between video frames.
 ---
 
 ## 📱 Mobile-First Development
-This project was developed exclusively on a **Tecno Spark** mobile device. It emphasizes:
+This project was developed exclusively on a mobile device. It emphasizes:
 * **Optimization:** Low CPU overhead for real-time signal processing.
 * **Visuals:** High-refresh radar UI and real-time signal waveforms.
 * **Architecture:** Understanding technology from the ground up rather than relying on pre-built libraries.
