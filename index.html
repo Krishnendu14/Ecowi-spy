@@ -490,6 +490,10 @@
 
 <script>
 // ─── State ───────────────────────────────────────────────────────────────────
+  window.onerror = function(msg, url, line) {
+    log("ERROR: " + msg + " at line " + line, "alert");
+};
+  
 let mode = 'doppler';
 let running = false;
 let sensitivity = 5;
@@ -549,17 +553,21 @@ const modeInfos = {
   camera:  '<strong style="color:var(--green)">CAMERA DELTA:</strong> Compares pixel differences between consecutive frames. Very sensitive — detects subtle motion across the camera field of view.',
   rssi:    '<strong style="color:var(--green)">WIFI RSSI:</strong> Monitors WiFi signal strength variance. Moving bodies between phone and router cause measurable signal fluctuations. Requires WiFi connection.'
 };
-
+  
 function setMode(m) {
-  if (running) { toggleDetection(); }
-  mode = m;
-  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-' + m).classList.add('active');
-  document.getElementById('modeInfo').innerHTML = modeInfos[m];
-  resetMetrics();
-  log(`Mode switched to ${m.toUpperCase()}`, 'important');
+  try {
+    if (running) { stopAll(); }
+    mode = m;
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + m).classList.add('active');
+    document.getElementById('modeInfo').innerHTML = modeInfos[m];
+    resetMetrics();
+    log(`Mode switched to ${m.toUpperCase()}`, 'important');
+  } catch (e) {
+    log("Switch failed: " + e.message, "alert");
+  }
 }
-
+  
 function resetMetrics() {
   document.getElementById('motionVal').textContent = '0.0';
   document.getElementById('detectionVal').textContent = 'NONE';
