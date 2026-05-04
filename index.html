@@ -489,6 +489,22 @@
 </div>
 
 <script>
+  // This 'snitch' code captures hidden errors and prints them to your screen
+window.onerror = function(msg, url, lineNo, columnNo, error) {
+  const logBox = document.getElementById('logBox');
+  if (logBox) {
+    const errorLine = document.createElement('div');
+    errorLine.style.color = '#ff3355'; // Red color for errors
+    errorLine.innerHTML = `<strong>⚠️ CRASH:</strong> ${msg} <br><small>Line: ${lineNo}</small>`;
+    logBox.prepend(errorLine);
+  }
+  return false;
+};
+
+// Check if the Browser even supports the needed APIs
+console.log("Checking APIs...");
+if (!navigator.mediaDevices) log("API ERROR: mediaDevices not supported on this browser/connection.", "alert");
+      
 // ─── State ───────────────────────────────────────────────────────────────────
   window.onerror = function(msg, url, line) {
     log("ERROR: " + msg + " at line " + line, "alert");
